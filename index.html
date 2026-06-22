@@ -3,11 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hệ Thống AI Quét & Định Dạng Đề Thi 3 Phần (Có Ảnh Minh Họa)</title>
+    <title>Hệ Thống AI Quét & Định Dạng Đề Thi 3 Phần (Tự Động Chuyển Đồ Thị/Bảng Thành Ảnh)</title>
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f2f5; margin: 0; padding: 20px; color: #333; }
@@ -25,6 +26,8 @@
         .btn-primary:disabled { background: #9ca3af; cursor: not-allowed; }
         .btn-secondary { background: #4f46e5; color: white; display: none; }
         .btn-secondary:hover { background: #4338ca; }
+        .btn-success { background: #0284c7; color: white; display: none; }
+        .btn-success:hover { background: #0369a1; }
         
         #status { margin: 15px 0; font-weight: bold; color: #2563eb; line-height: 1.5; }
         
@@ -39,17 +42,17 @@
         
         .code-block { background: #2d3748; color: #a3bffa; padding: 10px; border-radius: 4px; font-family: monospace; white-space: pre-wrap; margin-top: 5px; }
         
-        /* CSS Khu vực upload ảnh minh họa riêng cho câu hỏi */
-        .image-uploader-box { background: #fef2f2; border: 1px dashed #f87171; padding: 8px; border-radius: 4px; margin-top: 8px; display: flex; flex-direction: column; gap: 5px; }
-        .image-uploader-box input[type="file"] { font-size: 12px; }
-        .preview-img { max-width: 250px; max-height: 180px; margin-top: 5px; border-radius: 4px; border: 1px solid #cbd5e1; object-fit: contain; background: #fff; }
+        /* CSS Vùng dựng đồ thị và chuyển thành ảnh file */
+        .graph-render-box { background: #ffffff; border: 2px dashed #f43f5e; padding: 15px; border-radius: 6px; margin-top: 10px; display: inline-block; min-width: 320px; font-family: 'Courier New', Courier, monospace; color: #000; font-size: 14px; white-space: pre; line-height: 1.3; }
+        .btn-convert-box { background: #fff1f2; border: 1px solid #fecdd3; padding: 10px; border-radius: 4px; margin-top: 8px; }
+        .preview-img { max-width: 350px; max-height: 250px; margin-top: 8px; border-radius: 4px; border: 2px solid #10b981; object-fit: contain; background: #fff; display: block; }
     </style>
 </head>
 <body>
 
     <div class="container">
         <h2>Bộ Quét Đề Thi Trắc Nghiệm Thông Minh (Cấu Trúc 3 Phần Định Dạng Mới)</h2>
-        <p style="color: #666;">Tách cấu trúc đề thi thành <strong>Phần I (4 lựa chọn), Phần II (Đúng/Sai), Phần III (Ngắn)</strong> & Chèn ảnh minh họa.</p>
+        <p style="color: #666;">Tách cấu trúc đề thi thành <strong>Phần I (4 lựa chọn), Phần II (Đúng/Sai), Phần III (Ngắn)</strong> & Chuyển bảng số liệu / Đồ thị sang ảnh để dán vào Sheets.</p>
         
         <div class="config-zone">
             <label style="font-weight: bold; display: block; margin-bottom: 5px;">Nhập Google Gemini API Key của bạn (Free):</label>
@@ -65,7 +68,8 @@
 
         <div class="action-bars">
             <button class="btn btn-primary" id="processBtn" disabled onclick="startProcessing()">Bắt Đầu Quét & Phân Tách</button>
-            <button class="btn btn-secondary" id="copyExcelBtn" onclick="copyToClipboardExcel()">📋 Sao Chép Dạng Excel Tổng Hợp</button>
+            <button class="btn btn-secondary" id="copyExcelBtn" onclick="copyToClipboardExcel()">📋 Sao Chép Dạng Text (Không Ảnh)</button>
+            <button class="btn btn-success" id="copySheetsWithImgBtn" onclick="copyTableWithImagesToClipboard()">📋 Sao Chép Để Dán Vào Sheets (BAO GỒM ẢNH ĐỒ THỊ)</button>
         </div>
         
         <div id="status"></div>
@@ -123,12 +127,14 @@
         const dropZone = document.getElementById('dropZone');
         const processBtn = document.getElementById('processBtn');
         const copyExcelBtn = document.getElementById('copyExcelBtn');
+        const copySheetsWithImgBtn = document.getElementById('copySheetsWithImgBtn');
         const fileNameDiv = document.getElementById('fileName');
         const statusDiv = document.getElementById('status');
         const apiKeyInput = document.getElementById('apiKeyInput');
 
         let selectedFile = null;
         let globalParsedData = []; 
+        let rowImages = {}; // Bộ nhớ tạm lưu dữ liệu ảnh Base64 sau khi chụp bảng
 
         fileInput.addEventListener('change', (e) => { handleFileSelect(e.target.files); });
         dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
@@ -142,6 +148,7 @@
                 processBtn.disabled = false;
                 hideAllSections();
                 statusDiv.innerText = "";
+                rowImages = {};
             }
         }
 
@@ -150,6 +157,7 @@
             document.getElementById('sectionPart2').style.display = "none";
             document.getElementById('sectionPart3').style.display = "none";
             copyExcelBtn.style.display = "none";
+            copySheetsWithImgBtn.style.display = "none";
         }
 
         async function extractTextFromPDF(file) {
@@ -174,17 +182,25 @@
             });
         }
 
-        // Tạo chức năng xem trước hình ảnh tải lên ngay tại dòng của câu hỏi đó
-        function previewImageOnRow(input, previewId) {
-            const preview = document.getElementById(previewId);
-            if (input.files && input.files[0]) {
-                const reader = new FileReader();
-                reader.onload = function(e) {
-                    preview.src = e.target.result;
-                    preview.style.display = "block";
-                }
-                reader.readAsDataURL(input.files[0]);
-            }
+        // Hàm tự động chụp khối bảng văn bản/đồ thị thành một tệp ảnh lưu vào bộ nhớ
+        function convertGraphToImage(rowIndex, sourceId, previewId) {
+            const targetElement = document.getElementById(sourceId);
+            const previewImg = document.getElementById(previewId);
+            
+            statusDiv.innerText = `Đang xử lý hình ảnh câu số ${rowIndex + 1}...`;
+            statusDiv.style.color = "#2563eb";
+
+            html2canvas(targetElement, { scale: 2, useCORS: true }).then(canvas => {
+                const base64Image = canvas.toDataURL("image/png");
+                previewImg.src = base64Image;
+                previewImg.style.display = "block";
+                rowImages[rowIndex] = base64Image; // Lưu chuỗi Base64 phục vụ nút copy dán
+                
+                statusDiv.innerText = `Đã tạo ảnh cho câu ${rowIndex + 1}! Bạn có thể tải ảnh này hoặc bấm nút Copy để dán vào Sheets.`;
+                statusDiv.style.color = "#10b981";
+            }).catch(err => {
+                alert("Lỗi kết xuất ảnh: " + err);
+            });
         }
 
         async function startProcessing() {
@@ -196,6 +212,7 @@
             hideAllSections();
             statusDiv.style.color = "#2563eb";
             statusDiv.innerText = "Hệ thống đang chuẩn bị tệp...";
+            rowImages = {};
 
             try {
                 const fileExtension = selectedFile.name.split('.').pop().toLowerCase();
@@ -204,43 +221,40 @@
                 let imagePart = null;
 
                 if (isImage) {
-                    statusDiv.innerText = "Đang mã hóa hình ảnh để gửi Gemini Vision...";
                     imagePart = await fileToGenerativePart(selectedFile);
                 } else if (fileExtension === 'pdf') {
                     rawText = await extractTextFromPDF(selectedFile);
                 } else if (fileExtension === 'docx') {
-                    statusDiv.innerText = "Đang đọc file Word...";
                     const res = await mammoth.extractRawText({ arrayBuffer: await selectedFile.arrayBuffer() });
                     rawText = res.value;
                 } else if (fileExtension === 'xlsx') {
-                    statusDiv.innerText = "Đang đọc file Excel...";
                     const workbook = XLSX.read(new Uint8Array(await selectedFile.arrayBuffer()), { type: 'array' });
                     workbook.SheetNames.forEach(name => { rawText += XLSX.utils.sheet_to_txt(workbook.Sheets[name]) + "\n"; });
                 }
 
                 if(!isImage && !rawText.trim()) throw new Error("Không trích xuất được văn bản thô.");
 
-                statusDiv.innerText = "AI đang phân tách đề thi thành 3 phần và sửa lỗi chính tả...";
+                statusDiv.innerText = "AI đang phân tách đề thi & bóc tách cấu trúc đồ thị dữ liệu...";
 
-                const aiPrompt = `Bạn là chuyên gia phân tích và cấu trúc đề thi. Hãy bóc tách dữ liệu văn bản đề thi được cung cấp và chuyển đổi thành một mảng JSON sạch chứa danh sách câu hỏi.
+                const aiPrompt = `Bạn là chuyên gia cấu trúc đề thi. Hãy bóc tách văn bản đề thi và xuất ra mảng JSON sạch.
 
 PHÂN CHIA 3 PHẦN THÀNH PHẦN THEO ĐÚNG LOẠI CÂU HỎI:
-- Lớp "phan": nhận giá trị 1 nếu là câu hỏi trắc nghiệm thông thường chọn 1 trong 4 đáp án (A,B,C,D).
-- Lớp "phan": nhận giá trị 2 nếu là câu hỏi trắc nghiệm Đúng/Sai (Gồm 1 phần thân chung và có 4 ý nhỏ độc lập a, b, c, d bắt chọn Đúng hoặc Sai).
-- Lớp "phan": nhận giá trị 3 nếu là câu hỏi điền đáp số / câu trả lời ngắn.
+- Lớp "phan": 1 nếu là câu hỏi trắc nghiệm thông thường (A,B,C,D).
+- Lớp "phan": 2 nếu là câu hỏi trắc nghiệm Đúng/Sai.
+- Lớp "phan": 3 nếu là câu hỏi trả lời ngắn.
 
-CẤU TRÚC JSON PHẢI LÀ MỘT MẢNG DANH SÁCH CHỨA CÁC ĐỐI TƯỢNG CÓ THUỘC TÍNH SAU:
-- phan: Kiểu số (1 hoặc 2 hoặc 3).
-- maDe: Chuỗi mã đề (nếu không có, dùng tên file).
-- stt: Số thứ tự câu (Số nguyên).
-- cauHoi: Nội dung văn bản câu hỏi đã sửa chính tả.
-- a: Nội dung ý A hoặc ý nhỏ a) (Nếu thuộc phần 3 thì để trống "").
-- b: Nội dung ý B hoặc ý nhỏ b) (Nếu thuộc phần 3 thì để trống "").
-- c: Nội dung ý C hoặc ý nhỏ c) (Nếu thuộc phần 3 thì để trống "").
-- d: Nội dung ý D hoặc ý nhỏ d) (Nếu thuộc phần 3 thì để trống "").
-- dapAnDung: Chuỗi đáp án nếu đề gốc đánh dấu sẵn (Ví dụ phần 1: "A"; phần 2: "Đ-S-Đ-Đ" hoặc "Đ/S/Đ/S"; phần 3: "2.5"). Nếu không có, để trống "".
-- coHinhAnh: Nhận giá trị true nếu đề bài có ghi "như hình vẽ", "xem đồ thị", "sơ đồ bên" hoặc có hình minh họa đi kèm câu hỏi. Ngược lại nhận false.
-- isCode: Nhận giá trị true nếu câu hỏi chứa khối mã lập trình thực sự. Ngược lại nhận false.
+CẤU TRÚC JSON PHẢI LÀ MỘT MẢNG DANH SÁCH CHỨA CÁC ĐỐI TƯỢNG CÓ THUỘC TÍNH:
+- phan: Kiểu số (1, 2, 3).
+- maDe: Chuỗi mã đề.
+- stt: Số thứ tự câu.
+- cauHoi: Nội dung văn bản câu hỏi.
+- duLieuDoThi: Nếu câu hỏi chứa bảng biểu, đồ thị hoặc sơ đồ bằng ký tự/text, hãy tách riêng phần bảng đó ra và biểu diễn bằng định dạng bảng HTML (<table>) hoặc khối text rõ ràng tại đây để hiển thị. Nếu không có bảng biểu đồ thị, để trống "".
+- a: Lựa chọn A.
+- b: Lựa chọn B.
+- c: Lựa chọn C.
+- d: Lựa chọn D.
+- dapAnDung: Chuỗi đáp án.
+- coHinhAnh: Nhận giá trị true nếu trường 'duLieuDoThi' có dữ liệu hoặc đề bài có nhắc tới hình vẽ, đồ thị.
 
 CHÚ Ý: Chỉ trả về chuỗi JSON mảng thuần túy, KHÔNG bọc trong các ký tự markdown \`\`\`json ở đầu và cuối.
 
@@ -260,9 +274,8 @@ Văn bản cần quét:\n${rawText}`;
                 globalParsedData = JSON.parse(jsonString); 
 
                 statusDiv.style.color = "#10b981";
-                statusDiv.innerText = `Thành công! Đã bóc tách thành công ${globalParsedData.length} câu hỏi.`;
+                statusDiv.innerText = `Thành công! Đã bóc tách ${globalParsedData.length} câu hỏi. Hãy ấn nút 'Chuyển đổi thành file ảnh' đối với các câu có đồ thị/bảng biểu trước khi sao chép dán.`;
 
-                // Xóa trắng bảng dữ liệu cũ
                 const t1 = document.getElementById('tablePart1'); t1.innerHTML = "";
                 const t2 = document.getElementById('tablePart2'); t2.innerHTML = "";
                 const t3 = document.getElementById('tablePart3'); t3.innerHTML = "";
@@ -272,18 +285,18 @@ Văn bản cần quét:\n${rawText}`;
                 globalParsedData.forEach((row, index) => {
                     let cleanCauHoi = escapeHtml(row.cauHoi || '');
                     
-                    if(row.isCode === true) {
-                        cleanCauHoi = `<div class="code-block">${cleanCauHoi}</div>`;
-                    }
-
-                    // Xử lý chèn ô tải ảnh minh họa trực quan nếu AI phát hiện có hình ảnh/sơ đồ
-                    if(row.coHinhAnh === true) {
-                        const previewId = `prev_img_${index}`;
+                    if(row.duLieuDoThi && row.duLieuDoThi.trim() !== "") {
+                        const sourceId = `graph_src_${index}`;
+                        const previewId = `graph_prev_${index}`;
+                        
                         cleanCauHoi += `
-                            <div class="image-uploader-box">
-                                <span style="color:#b91c1c; font-weight:bold;">🖼️ Câu này có Sơ đồ / Hình ảnh minh họa:</span>
-                                <input type="file" accept="image/*" onchange="previewImageOnRow(this, '${previewId}')">
-                                <img id="${previewId}" class="preview-img" style="display:none;" src="" alt="Xem trước ảnh">
+                            <div class="btn-convert-box">
+                                <span style="color:#e11d48; font-weight:bold; display:block; margin-bottom:5px;">📊 Phát hiện đồ thị / bảng số liệu văn bản:</span>
+                                <div id="${sourceId}" class="graph-render-box">${row.duLieuDoThi}</div>
+                                <div style="margin-top:8px;">
+                                    <button type="button" class="btn" style="background:#f43f5e; color:white; padding:6px 12px; font-size:12px;" onclick="convertGraphToImage(${index}, '${sourceId}', '${previewId}')">📸 Tự động chuyển bảng trên thành ẢNH FILE</button>
+                                </div>
+                                <img id="${previewId}" class="preview-img" style="display:none;" alt="Hình ảnh kết quả">
                             </div>
                         `;
                     }
@@ -315,16 +328,17 @@ Văn bản cần quét:\n${rawText}`;
                     }
                 });
 
-                // Hiển thị các khối phần nếu có dữ liệu tương ứng
                 if(hasP1) document.getElementById('sectionPart1').style.display = "block";
                 if(hasP2) document.getElementById('sectionPart2').style.display = "block";
                 if(hasP3) document.getElementById('sectionPart3').style.display = "block";
-                if(globalParsedData.length > 0) copyExcelBtn.style.display = "inline-block";
+                if(globalParsedData.length > 0) {
+                    copyExcelBtn.style.display = "inline-block";
+                    copySheetsWithImgBtn.style.display = "inline-block";
+                }
 
             } catch (error) {
                 statusDiv.style.color = "#ef4444";
-                statusDiv.innerText = "Lỗi hệ thống: " + error.message;
-                console.error(error);
+                statusDiv.innerText = "Lỗi hệ thống hoặc mô hình quá tải: " + error.message;
             } finally {
                 processBtn.disabled = false;
             }
@@ -332,27 +346,59 @@ Văn bản cần quét:\n${rawText}`;
 
         function copyToClipboardExcel() {
             if (!globalParsedData || globalParsedData.length === 0) return;
-
-            let tsvContent = "Phần\tMã đề\tSTT\tNội dung câu hỏi\tLựa chọn A / ý a\tLựa chọn B / ý b\tLựa chọn C / ý c\tLựa chọn D / ý d\tĐáp án / Đáp số\tCó Hình Ảnh\n";
-
+            let tsvContent = "Phần\tMã đề\tSTT\tNội dung câu hỏi\tA\tB\tC\tD\tĐáp án\n";
             globalParsedData.forEach(row => {
-                const p = `"Phần ${row.phan}"`;
-                const cleanMaDe = `"${(row.maDe || '').replace(/"/g, '""')}"`;
-                const cleanStt = `"${row.stt}"`;
-                const cleanCauHoi = `"${(row.cauHoi || '').replace(/"/g, '""')}"`;
-                const cleanA = `"${(row.a || '').replace(/"/g, '""')}"`;
-                const cleanB = `"${(row.b || '').replace(/"/g, '""')}"`;
-                const cleanC = `"${(row.c || '').replace(/"/g, '""')}"`;
-                const cleanD = `"${(row.d || '').replace(/"/g, '""')}"`;
-                const cleanDapAn = `"${(row.dapAnDung || '').replace(/"/g, '""')}"`;
-                const cleanAnh = `"${row.coHinhAnh ? 'Có hình' : 'Không'}"`;
+                tsvContent += `Phần ${row.phan}\t${row.maDe || ''}\t${row.stt}\t${row.cauHoi || ''}\t${row.a || ''}\t${row.b || ''}\t${row.c || ''}\t${row.d || ''}\t${row.dapAnDung || ''}\n`;
+            });
+            navigator.clipboard.writeText(tsvContent).then(() => { alert("Đã copy văn bản thô!"); });
+        }
 
-                tsvContent += `${p}\t${cleanMaDe}\t${cleanStt}\t${cleanCauHoi}\t${cleanA}\t${cleanB}\t${cleanC}\t${cleanD}\t${cleanDapAn}\t${cleanAnh}\n`;
+        // CHỨC NĂNG SAO CHÉP RICH TABLE ĐỂ DÁN ĐƯỢC ẢNH VÀO GOOGLE SHEETS
+        function copyTableWithImagesToClipboard() {
+            if (!globalParsedData || globalParsedData.length === 0) return;
+
+            let htmlString = `<table border="1" style="border-collapse:collapse;">
+                <thead>
+                    <tr style="background-color:#f3f4f6;">
+                        <th>Phần</th><th>Mã đề</th><th>STT</th><th>Nội dung câu hỏi</th>
+                        <th>Ý A / ý a</th><th>Ý B / ý b</th><th>Ý C / ý c</th><th>Ý D / ý d</th><th>Đáp án</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+
+            globalParsedData.forEach((row, index) => {
+                let questionContent = row.cauHoi || '';
+                
+                // Nếu bảng đã được chuyển thành ảnh Base64, nhúng thẻ img vào ô dữ liệu HTML gửi tới Clipboard
+                if (rowImages[index]) {
+                    questionContent += `<br><br><img src="${rowImages[index]}" width="280" style="display:block; margin-top:10px;">`;
+                } else if (row.duLieuDoThi) {
+                    questionContent += `<br><br>[Bảng dữ liệu gốc]:\n${row.duLieuDoThi}`;
+                }
+
+                htmlString += `<tr>
+                    <td>Phần ${row.phan}</td>
+                    <td>${escapeHtml(row.maDe || '')}</td>
+                    <td>${row.stt}</td>
+                    <td>${questionContent}</td>
+                    <td>${escapeHtml(row.a || '')}</td>
+                    <td>${escapeHtml(row.b || '')}</td>
+                    <td>${escapeHtml(row.c || '')}</td>
+                    <td>${escapeHtml(row.d || '')}</td>
+                    <td>${escapeHtml(row.dapAnDung || '')}</td>
+                </tr>`;
             });
 
-            navigator.clipboard.writeText(tsvContent).then(() => {
-                alert("Đã sao chép bảng tổng hợp 3 phần dữ liệu! Bạn hãy mở Excel và nhấn Ctrl + V để xem kết quả.");
-            }).catch(err => { alert("Lỗi sao chép: " + err); });
+            htmlString += `</tbody></table>`;
+
+            const blob = new Blob([htmlString], { type: 'text/html' });
+            const data = [new ClipboardItem({ 'text/html': blob })];
+
+            navigator.clipboard.write(data).then(() => {
+                alert("🎉 Đã sao chép dữ liệu dạng bảng nâng cao!\nHãy mở Google Sheets của bạn, chọn một ô và nhấn Ctrl + V để nhúng chữ và ảnh đồ thị vào bảng.");
+            }).catch(err => {
+                alert("Lỗi sao chép: " + err);
+            });
         }
 
         function escapeHtml(text) {
