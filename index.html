@@ -260,18 +260,80 @@ CHÚ Ý: Chỉ trả về chuỗi JSON mảng thuần túy, KHÔNG bọc trong c
 
 Văn bản cần quét:\n${rawText}`;
 
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-                let requestBody = {
-                    contents: [{ parts: isImage ? [imagePart, { text: aiPrompt }] : [{ text: aiPrompt }] }],
-                    generationConfig: { responseMimeType: "application/json" }
-                };
+                // Danh sách model ưu tiên: thử lần lượt nếu bị lỗi quota
+                const MODEL_LIST = [
+                    "gemini-2.5-flash-lite",
+                    "gemini-2.5-flash",
+                    "gemini-3.5-flash",
+                ];
 
-                const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestBody) });
-                const aiData = await response.json();
-                if (aiData.error) throw new Error("Lỗi API: " + aiData.error.message);
+                // Hàm đếm ngược hiển thị cho người dùng
+                async function countdown(seconds, modelName) {
+                    for (let i = seconds; i > 0; i--) {
+                        statusDiv.style.color = "#f59e0b";
+                        statusDiv.innerText = `⏳ Model ${modelName} bị giới hạn quota. Tự động thử lại sau ${i} giây...`;
+                        await new Promise(r => setTimeout(r, 1000));
+                    }
+                }
 
+                // Hàm gọi API có retry tự động
+                async function callGeminiWithRetry(prompt, imgPart) {
+                    for (let m = 0; m < MODEL_LIST.length; m++) {
+                        const modelName = MODEL_LIST[m];
+                        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+                        const requestBody = {
+                            contents: [{ parts: imgPart ? [imgPart, { text: prompt }] : [{ text: prompt }] }],
+                            generationConfig: { responseMimeType: "application/json" }
+                        };
+
+                        let retryCount = 0;
+                        const MAX_RETRIES = 3;
+
+                        while (retryCount <= MAX_RETRIES) {
+                            statusDiv.style.color = "#2563eb";
+                            statusDiv.innerText = `🤖 Đang gọi AI (model: ${modelName}, lần thử ${retryCount + 1})...`;
+
+                            const response = await fetch(url, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify(requestBody)
+                            });
+                            const aiData = await response.json();
+
+                            if (!aiData.error) {
+                                // Thành công
+                                return aiData;
+                            }
+
+                            const errMsg = aiData.error.message || "";
+                            const isQuotaError = response.status === 429 || errMsg.includes("quota") || errMsg.includes("RESOURCE_EXHAUSTED");
+
+                            if (isQuotaError) {
+                                // Trích xuất thời gian chờ từ message (nếu có), mặc định 60s
+                                const matchTime = errMsg.match(/retry in ([\d.]+)s/i);
+                                const waitSeconds = matchTime ? Math.ceil(parseFloat(matchTime[1])) + 2 : 62;
+
+                                if (retryCount < MAX_RETRIES) {
+                                    await countdown(waitSeconds, modelName);
+                                    retryCount++;
+                                } else {
+                                    // Hết số lần thử với model này, chuyển sang model tiếp theo
+                                    statusDiv.innerText = `⚠️ Model ${modelName} đã hết quota. Đang chuyển sang model khác...`;
+                                    await new Promise(r => setTimeout(r, 1500));
+                                    break; // thoát vòng while, sang model tiếp theo
+                                }
+                            } else {
+                                // Lỗi khác không phải quota → ném lỗi ngay
+                                throw new Error("Lỗi API: " + errMsg);
+                            }
+                        }
+                    }
+                    throw new Error("Tất cả các model đều bị giới hạn quota. Vui lòng đợi vài phút rồi thử lại.");
+                }
+
+                const aiData = await callGeminiWithRetry(aiPrompt, imagePart);
                 const jsonString = aiData.candidates[0].content.parts[0].text.trim();
-                globalParsedData = JSON.parse(jsonString); 
+                globalParsedData = JSON.parse(jsonString);
 
                 statusDiv.style.color = "#10b981";
                 statusDiv.innerText = `Thành công! Đã bóc tách ${globalParsedData.length} câu hỏi. Hãy ấn nút 'Chuyển đổi thành file ảnh' đối với các câu có đồ thị/bảng biểu trước khi sao chép dán.`;
